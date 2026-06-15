@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.idea/
+*.db
+*.db-shm
+*.db-wal
+.env
+upload_plugin.py
+install_local_plugin.py
+check_db.py

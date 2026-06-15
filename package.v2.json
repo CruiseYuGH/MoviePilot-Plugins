@@ -1,0 +1,16 @@
+{
+  "TransmissionTrackerLabel": {
+    "name": "Transmission Tracker 标签",
+    "description": "根据种子 tracker 地址，按配置规则自动为 Transmission 添加标签（支持 / 分隔多标签）",
+    "labels": "下载管理,Transmission,标签",
+    "version": "1.0.1",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/category.png",
+    "author": "Kuanghom",
+    "level": 1,
+    "system_version": ">=2.12.0",
+    "history": {
+      "v1.0.1": "修复设置页空白：修正下载器列表读取与 Cron 输入组件",
+      "v1.0.0": "首个版本：支持 tracker 规则映射、定时任务、远程命令"
+    }
+  }
+}
