@@ -17,7 +17,7 @@ MoviePilot V2 插件仓库。
 └── plugins.v2/
     ├── transmissiontrackerlabel/
     │   └── __init__.py
-    └── fengchaosignin/
+    └── fengchaosigninfix/
         └── __init__.py
 ```
 

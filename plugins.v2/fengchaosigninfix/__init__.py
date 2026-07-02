@@ -18,7 +18,7 @@ from app.schemas import NotificationType
 from app.utils.http import RequestUtils
 
 
-class FengchaoSignin(_PluginBase):
+class FengchaoSigninFix(_PluginBase):
     # 插件名称
     plugin_name = "蜂巢签到(修复版)"
     # 插件描述
@@ -26,13 +26,13 @@ class FengchaoSignin(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/madrays/MoviePilot-Plugins/main/icons/fengchao.png"
     # 插件版本
-    plugin_version = "2.1.1"
+    plugin_version = "2.1.2"
     # 插件作者
     plugin_author = "Kuanghom,madrays"
     # 作者主页
     author_url = "https://github.com/madrays"
     # 插件配置项ID前缀
-    plugin_config_prefix = "fengchaosignin_"
+    plugin_config_prefix = "fengchaosigninfix_"
     # 加载顺序
     plugin_order = 24
     # 可使用的用户级别
@@ -815,7 +815,7 @@ class FengchaoSignin(_PluginBase):
 
         if self._enabled and self._cron:
             services.append({
-                "id": "FengchaoSignin",
+                "id": "FengchaoSigninFix",
                 "name": "蜂巢签到服务",
                 "trigger": CronTrigger.from_crontab(self._cron),
                 "func": self.__signin,
