@@ -27,7 +27,7 @@ class HdskyDiceBet(_PluginBase):
     plugin_name = "空论坛掷骰子下注"
     plugin_desc = "自动参与 HDSky 掷骰子论坛下注；智能模式默认大小，可选按统计显著性加注顺子/豹子"
     plugin_icon = "hdskydicebet.png"
-    plugin_version = "1.0.10"
+    plugin_version = "1.0.11"
     plugin_author = "Kuanghom"
     author_url = "https://github.com/Kuanghom"
     plugin_config_prefix = "hdskydicebet_"
@@ -50,6 +50,8 @@ class HdskyDiceBet(_PluginBase):
     # 智能主注仅大小（最大猜中率 / 最优 EV）；高赔为可选加注
     SMART_BASE_TYPES = ("大", "小")
     SMART_EXTRA_TYPES = ("顺子", "豹子")
+    # 连开大于 2（即 >=3）才强反压
+    SMART_REVERSE_STREAK = 3
     # 单侧 z 偏低阈值（约 15%）；罕见事件另有 k=0 / 半期望 兜底，避免 50 局豹子永远触发不了
     SMART_Z_THRESHOLD = -1.04
     SMART_EXTRA_MIN_ROUNDS = 20
@@ -222,7 +224,7 @@ class HdskyDiceBet(_PluginBase):
                                     "model": "notify",
                                     "label": "开启通知",
                                     "color": "info",
-                                    "hint": "下注成功/失败、开奖盈亏会推送到 MoviePilot 消息渠道",
+                                    "hint": "下注成功/失败、开奖盈亏、达每日次数或观影券上限停止时推送",
                                     "persistent-hint": True,
                                 },
                             }
@@ -375,7 +377,7 @@ class HdskyDiceBet(_PluginBase):
                                         "type": "info",
                                         "variant": "tonal",
                                         "density": "compact",
-                                        "text": "智能主注必为「大」或「小」。勾选顺子/豹子后，样本明显偏冷或长时间未出才会额外加注（不会每帖都压）。",
+                                        "text": "智能主注：连开≥3反压 + 近/中/远历史衰减加权 + 弱转移。勾选顺子/豹子后冷连满间隔即连压。",
                                     },
                                 }
                             ],
@@ -1030,6 +1032,47 @@ class HdskyDiceBet(_PluginBase):
             ),
         )
 
+    def _notify_daily_limit_stop(self, kind: str, current: int, limit: int):
+        """
+        因每日下注次数 / 观影券达上限停止时通知。
+        kind: bets | tickets；同一自然日每种原因只发一次，避免 cron 刷屏。
+        """
+        today = self._today_str()
+        state = dict(self.get_data("limit_stop_notified") or {})
+        if state.get("date") != today:
+            state = {"date": today}
+        if state.get(kind):
+            return
+        state[kind] = True
+        self.save_data("limit_stop_notified", state)
+
+        if kind == "bets":
+            reason = "每日下注次数已达上限"
+            detail = f"🧾 今日下注：{current} / {limit} 次"
+            title = "【⏸️ 空论坛停止下注】"
+        else:
+            reason = "每日观影券次数已达上限"
+            detail = f"🎫 今日观影券：{current} / {limit}"
+            title = "【⏸️ 空论坛停止下注】"
+
+        day_pl = self._summarize_pl(self.get_data("history") or [], "day")
+        self._send_notification(
+            title=title,
+            text=(
+                f"📢 执行结果\n"
+                f"━━━━━━━━━━\n"
+                f"🕐 时间：{self._now_str()}\n"
+                f"⏸️ 状态：已停止自动下注\n"
+                f"💬 原因：{reason}\n"
+                f"{detail}\n"
+                f"💰 今日盈亏：{day_pl.get('profit', 0):+d}\n"
+                f"━━━━━━━━━━\n"
+                f"ℹ️ 明日计数重置后将自动恢复\n"
+                f"━━━━━━━━━━"
+            ),
+        )
+        logger.info(f"{self.LOG_TAG}已通知达上限停止 kind={kind} {current}/{limit}")
+
     # ------------------------------------------------------------------ #
     # 主流程
     # ------------------------------------------------------------------ #
@@ -1102,8 +1145,12 @@ class HdskyDiceBet(_PluginBase):
         )
 
         if self._max_daily_bets is not None and bets_today >= self._max_daily_bets:
+            self._notify_daily_limit_stop("bets", bets_today, self._max_daily_bets)
             return f"已达每日下注上限 {self._max_daily_bets}"
         if self._max_daily_tickets is not None and tickets_today >= self._max_daily_tickets:
+            self._notify_daily_limit_stop(
+                "tickets", tickets_today, self._max_daily_tickets
+            )
             return f"已达每日观影券上限 {self._max_daily_tickets}（今日 {tickets_today}）"
 
         topics = self._list_forum_topics(pages=2)
@@ -1127,10 +1174,18 @@ class HdskyDiceBet(_PluginBase):
             if self._max_daily_bets is not None and self._count_bets_on(
                 self.get_data("history") or [], today
             ) >= self._max_daily_bets:
+                self._notify_daily_limit_stop(
+                    "bets",
+                    self._count_bets_on(self.get_data("history") or [], today),
+                    self._max_daily_bets,
+                )
                 break
             if self._max_daily_tickets is not None:
                 tickets_now = int((self.get_data("tickets_by_day") or {}).get(today, 0))
                 if tickets_now >= self._max_daily_tickets:
+                    self._notify_daily_limit_stop(
+                        "tickets", tickets_now, self._max_daily_tickets
+                    )
                     break
             # 二次确认帖内是否已下注 / 是否已锁定
             detail = self._fetch_topic_detail(topic["topic_id"])
@@ -1155,6 +1210,11 @@ class HdskyDiceBet(_PluginBase):
             plans = self._resolve_bet_plans(topics)
             local_types = self._bet_types_on_topic(topic["topic_id"])
             done_types = local_types | forum_types
+            # 智能模式同帖只保留一侧主注，避免多次扫描时大/小对冲
+            if (self._bet_mode or "").lower() == "smart" and (
+                done_types & set(self.SMART_BASE_TYPES)
+            ):
+                plans = [(t, a) for t, a in plans if t not in self.SMART_BASE_TYPES]
             todo = [(t, a) for t, a in plans if t not in done_types]
             if not todo:
                 logger.debug(
@@ -1172,6 +1232,11 @@ class HdskyDiceBet(_PluginBase):
                 if self._max_daily_bets is not None and self._count_bets_on(
                     self.get_data("history") or [], today
                 ) >= self._max_daily_bets:
+                    self._notify_daily_limit_stop(
+                        "bets",
+                        self._count_bets_on(self.get_data("history") or [], today),
+                        self._max_daily_bets,
+                    )
                     acted.append(f"达每日上限，停止后续多注@#{topic['topic_id']}")
                     break
                 if idx > 0 and self._reply_interval > 0:
@@ -1674,13 +1739,25 @@ class HdskyDiceBet(_PluginBase):
             return 0.0
         return (count / n - p0) / se
 
+    @staticmethod
+    def _weighted_freq(seq: List[str], target: str, decay: float) -> float:
+        """指数衰减频率：下标 0 为最新。"""
+        w_sum = w_hit = 0.0
+        for i, r in enumerate(seq):
+            w = decay ** i
+            w_sum += w
+            if r == target:
+                w_hit += w
+        return (w_hit / w_sum) if w_sum > 0 else 0.5
+
     def _smart_choose_base(self, results: List[str]) -> str:
         """
         主注只在「大/小」中选择（两者理论 P、EV 相同）。
-        - 只统计大小结果，在最近短窗口内压相对偏少的一侧
-        - 若偏少侧已连续多局未出，改跟最近一次大小（打破「越输越锁死」）
-        - 接近持平时随机，避免平局默认锁「大」
-        不声称提高真实胜率，只避免无意义地碰高赔主注。
+        综合评分：
+        1) 连开 >2（>=3）强反压，连得越长权重越高
+        2) 近/中/远三档历史指数衰减加权：压相对短缺侧（越近权重越大）
+        3) 弱转移：上一把之后历史上更常接出的一侧略加分
+        分数接近则随机。不声称提高真实胜率。
         """
         size_results = [r for r in results if r in self.SMART_BASE_TYPES]
         if not size_results:
@@ -1688,64 +1765,103 @@ class HdskyDiceBet(_PluginBase):
             logger.info(f"{self.LOG_TAG}智能主注={pick} (无大小样本，随机)")
             return pick
 
-        # 短窗口：旧样本过长会把偏好钉死在一侧
-        window = size_results[: min(20, len(size_results))]
-        emp = Counter(window)
-        c_da, c_xiao = emp.get("大", 0), emp.get("小", 0)
-        diff = c_xiao - c_da  # >0 表示小更多 → 倾向压大
+        scores = {"大": 0.0, "小": 0.0}
+        parts: List[str] = []
 
-        if abs(diff) <= 1:
+        # 1) 连开反压：必须大于 2
+        run_side = size_results[0]
+        run_len = 0
+        for r in size_results:
+            if r != run_side:
+                break
+            run_len += 1
+        if run_len >= self.SMART_REVERSE_STREAK:
+            opp = "小" if run_side == "大" else "大"
+            boost = 1.15 + min(run_len - 2, 5) * 0.4
+            scores[opp] += boost
+            parts.append(f"连开{run_side}×{run_len}反压(+{boost:.2f})")
+
+        # 2) 近/中/远历史加权短缺
+        layers = (
+            (size_results[:10], 0.86, 1.35, "近"),
+            (size_results[:24], 0.93, 0.75, "中"),
+            (size_results, 0.97, 0.45, "远"),
+        )
+        for seq, decay, scale, tag in layers:
+            if len(seq) < 4:
+                continue
+            for t in self.SMART_BASE_TYPES:
+                # 相对 50% 短缺 → 加分
+                deficit = 0.5 - self._weighted_freq(seq, t, decay)
+                scores[t] += scale * deficit
+            freq_da = self._weighted_freq(seq, "大", decay)
+            parts.append(f"{tag}衰权大={freq_da:.2f}")
+
+        # 3) 弱一阶转移：上一把之后更常出现的一侧
+        prev = size_results[0]
+        follows = Counter()
+        for i in range(len(size_results) - 1):
+            # newest-first：更旧 size_results[i+1] 之后开出 size_results[i]
+            if size_results[i + 1] == prev:
+                follows[size_results[i]] += 1
+        follow_n = sum(follows.values())
+        if follow_n >= 5:
+            for t in self.SMART_BASE_TYPES:
+                scores[t] += 0.28 * (follows.get(t, 0) / follow_n - 0.5)
+            parts.append(
+                f"转移{prev}→大{follows.get('大', 0)}/小{follows.get('小', 0)}"
+            )
+
+        best = max(scores, key=scores.get)
+        other = "小" if best == "大" else "大"
+        if abs(scores[best] - scores[other]) < 0.08:
             pick = random.choice(["大", "小"])
-            reason = f"近{len(window)}局接近 大:{c_da}/小:{c_xiao}，随机"
+            reason = "分差近，随机"
         else:
-            pick = "大" if diff > 0 else "小"
-            reason = f"近{len(window)}局 大:{c_da}/小:{c_xiao}，压偏少侧"
-
-        # 赌徒谬误死磕：偏少侧冷连越长越该换边，而不是继续加码同一侧
-        cold = self._cold_streak(size_results, pick)
-        if cold >= 3:
-            hot = size_results[0]
-            reason = f"{reason}；{pick}冷连{cold}，改跟热={hot}"
-            pick = hot
+            pick = best
+            reason = "综合分高"
 
         logger.info(
-            f"{self.LOG_TAG}智能主注={pick} {reason} "
+            f"{self.LOG_TAG}智能主注={pick} ({reason}) "
+            f"scores={{大:{scores['大']:.3f}, 小:{scores['小']:.3f}}} "
+            f"{'; '.join(parts)} "
             f"样本大小={len(size_results)}/{len(results)}"
         )
         return pick
 
     def _should_add_extra(self, bet_type: str, results: List[str]) -> Tuple[bool, str]:
         """
-        是否加注高赔类型：要求
-        1) 样本量足够（至少 SMART_EXTRA_MIN_ROUNDS，且建议 >= 1/p0）
-        2) 偏冷：z 偏低，或样本内 0 次且期望已 >=1.2，或次数不到期望一半
-        3) 最近连续未出达到约 0.35/p0 局（豹子约 13，顺子约 4）
-        说明：独立骰子下这不能制造正期望，只是「用户允许高赔时的保守触发器」。
+        是否加注高赔类型：
+        - 优先：冷连达到约一个期望间隔（顺子≈9，豹子≈33）→ 连压直到开出
+        - 其次：频率明显偏低（z / 零次 / 半期望）且冷连尚可
+        说明：独立骰子下不能制造正期望，只是用户允许高赔时的触发器。
         """
         p0 = self._p_theo(bet_type)
         n = len(results)
-        min_n = max(self.SMART_EXTRA_MIN_ROUNDS, int(math.ceil(1.0 / p0)))
+        min_n = max(self.SMART_EXTRA_MIN_ROUNDS, int(math.ceil(0.8 / p0)))
         if n < min_n:
             return False, f"样本不足 n={n}<{min_n}"
         k = sum(1 for r in results if r == bet_type)
         expected = n * p0
         z = self._proportion_z(k, n, p0)
         streak = self._cold_streak(results, bet_type)
-        min_streak = max(3, int(math.ceil(0.35 / p0)))
+        # 约 1 个期望间隔未出即开始连压（顺子~9，豹子~33）
+        gap = max(5, int(math.ceil(0.9 / p0)))
+
+        if streak >= gap:
+            return True, f"冷连连压 streak={streak}>={gap} k={k}/{n} E={expected:.1f}"
 
         cold_enough = (
             z <= self.SMART_Z_THRESHOLD
             or (k == 0 and expected >= 1.2)
             or (expected >= 2 and k <= expected * 0.5)
         )
-        if not cold_enough:
-            return False, (
-                f"不够冷 z={z:.2f} k={k}/{n} E={expected:.1f} "
-                f"(需 z<={self.SMART_Z_THRESHOLD} 或 0次/半期望)"
-            )
-        if streak < min_streak:
-            return False, f"冷连不足 streak={streak}<{min_streak} (z={z:.2f} k={k}/{n})"
-        return True, f"通过 z={z:.2f} streak={streak} k={k}/{n} E={expected:.1f}"
+        soft_streak = max(3, int(math.ceil(0.35 / p0)))
+        if cold_enough and streak >= soft_streak:
+            return True, f"频率偏冷 z={z:.2f} streak={streak} k={k}/{n} E={expected:.1f}"
+        return False, (
+            f"不加注 streak={streak}/{gap} z={z:.2f} k={k}/{n} E={expected:.1f}"
+        )
 
     def _smart_resolve_plans(self, recent_topics: List[Dict[str, Any]]) -> List[Tuple[str, int]]:
         """
