@@ -23,7 +23,7 @@ class HdskyDiceBet(_PluginBase):
     plugin_name = "空论坛掷骰子下注"
     plugin_desc = "自动参与 HDSky 掷骰子论坛下注，支持固定/随机/智能策略，并汇总魔力盈亏"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/HDSky.ico"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "Kuanghom"
     author_url = "https://github.com/Kuanghom"
     plugin_config_prefix = "hdskydicebet_"
@@ -166,6 +166,8 @@ class HdskyDiceBet(_PluginBase):
                                             "model": "notify",
                                             "label": "开启通知",
                                             "color": "info",
+                                            "hint": "下注成功/失败、开奖盈亏会推送到 MoviePilot 消息渠道",
+                                            "persistent-hint": True,
                                         },
                                     }
                                 ],
@@ -602,6 +604,91 @@ class HdskyDiceBet(_PluginBase):
         }
 
     # ------------------------------------------------------------------ #
+    # 通知（风格对齐蜂巢签到）
+    # ------------------------------------------------------------------ #
+    def _send_notification(self, title: str, text: str):
+        if not self._notify:
+            return
+        self.post_message(
+            mtype=NotificationType.SiteMessage,
+            title=title,
+            text=text,
+        )
+
+    def _notify_bet_success(self, record: Dict[str, Any]):
+        today = self._today_str()
+        history = self.get_data("history") or []
+        day_pl = self._summarize_pl(history, "day")
+        bets_today = self._count_bets_on(history, today)
+        tickets_today = int((self.get_data("tickets_by_day") or {}).get(today, 0))
+        mode_map = {"fixed": "固定", "random": "随机", "smart": "智能", "manual": "手动"}
+        mode_text = mode_map.get(str(record.get("mode")), str(record.get("mode")))
+        limit_bet = f" / {self._max_daily_bets}" if self._max_daily_bets else ""
+        limit_ticket = f" / {self._max_daily_tickets}" if self._max_daily_tickets else ""
+        self._send_notification(
+            title="【✅ 空论坛下注成功】",
+            text=(
+                f"📢 执行结果\n"
+                f"━━━━━━━━━━\n"
+                f"🕐 时间：{record.get('time') or self._now_str()}\n"
+                f"✨ 状态：下注成功\n"
+                f"🎲 类型：{record.get('bet_type')} {record.get('amount')}\n"
+                f"🧠 模式：{mode_text}\n"
+                f"📌 帖子：#{record.get('topic_id')}\n"
+                f"⏳ 开奖：{record.get('draw_time') or '—'}\n"
+                f"━━━━━━━━━━\n"
+                f"📊 今日统计\n"
+                f"🧾 下注：{bets_today}{limit_bet} 次\n"
+                f"🎫 观影券：{tickets_today}{limit_ticket}\n"
+                f"💰 今日盈亏：{day_pl.get('profit', 0):+d}\n"
+                f"━━━━━━━━━━"
+            ),
+        )
+
+    def _notify_bet_failure(self, topic_id: str, reason: str):
+        self._send_notification(
+            title="【❌ 空论坛下注失败】",
+            text=(
+                f"📢 执行结果\n"
+                f"━━━━━━━━━━\n"
+                f"🕐 时间：{self._now_str()}\n"
+                f"❌ 状态：下注失败\n"
+                f"📌 帖子：#{topic_id}\n"
+                f"💬 原因：{reason}\n"
+                f"━━━━━━━━━━"
+            ),
+        )
+
+    def _notify_settlement(self, item: Dict[str, Any]):
+        profit = int(item.get("profit") or 0)
+        won = profit > 0
+        title = "【🎉 空论坛开奖盈利】" if won else (
+            "【💔 空论坛开奖亏损】" if profit < 0 else "【ℹ️ 空论坛已开奖】"
+        )
+        status = "猜中盈利" if won else ("未中亏损" if profit < 0 else "已结算")
+        day_pl = self._summarize_pl(self.get_data("history") or [], "day")
+        week_pl = self._summarize_pl(self.get_data("history") or [], "week")
+        self._send_notification(
+            title=title,
+            text=(
+                f"📢 执行结果\n"
+                f"━━━━━━━━━━\n"
+                f"🕐 时间：{self._now_str()}\n"
+                f"✨ 状态：{status}\n"
+                f"🎲 下注：{item.get('bet_type')} {item.get('amount')}\n"
+                f"🏆 开奖：{item.get('result') or '—'}\n"
+                f"💵 本局盈亏：{profit:+d}\n"
+                f"📌 帖子：#{item.get('topic_id')}\n"
+                f"━━━━━━━━━━\n"
+                f"📊 汇总\n"
+                f"📅 今日盈亏：{day_pl.get('profit', 0):+d}\n"
+                f"🗓️ 本周盈亏：{week_pl.get('profit', 0):+d}\n"
+                f"🎫 观影券：{'是' if item.get('got_ticket') else '否'}\n"
+                f"━━━━━━━━━━"
+            ),
+        )
+
+    # ------------------------------------------------------------------ #
     # 主流程
     # ------------------------------------------------------------------ #
     def run_once(self):
@@ -621,12 +708,17 @@ class HdskyDiceBet(_PluginBase):
                 "last_run",
                 {"time": self._now_str(), "message": f"异常: {e}"},
             )
-            if self._notify:
-                self.post_message(
-                    mtype=NotificationType.SiteMessage,
-                    title=f"{self.plugin_name}",
-                    text=f"执行异常：{e}",
-                )
+            self._send_notification(
+                title="【❌ 空论坛下注异常】",
+                text=(
+                    f"📢 执行结果\n"
+                    f"━━━━━━━━━━\n"
+                    f"🕐 时间：{self._now_str()}\n"
+                    f"❌ 状态：执行异常\n"
+                    f"💬 原因：{e}\n"
+                    f"━━━━━━━━━━"
+                ),
+            )
         finally:
             self._run_lock.release()
 
@@ -694,15 +786,11 @@ class HdskyDiceBet(_PluginBase):
                 }
                 self._append_history(record)
                 acted.append(f"{bet_type} {amount} @#{topic['topic_id']}")
-                if self._notify:
-                    self.post_message(
-                        mtype=NotificationType.SiteMessage,
-                        title=self.plugin_name,
-                        text=f"下注成功：{bet_type} {amount}\n帖子：#{topic['topic_id']}\n开奖：{topic.get('draw_time')}",
-                    )
+                self._notify_bet_success(record)
             else:
                 acted.append(f"失败#{topic['topic_id']}:{msg}")
                 logger.warning(f"{self.LOG_TAG}下注失败 topic={topic['topic_id']}: {msg}")
+                self._notify_bet_failure(topic["topic_id"], msg)
 
         if not acted:
             return "有开放帖，但均已下注或不可投"
@@ -1076,12 +1164,14 @@ class HdskyDiceBet(_PluginBase):
         history = self.get_data("history") or []
         changed = False
         tickets_by_day = dict(self.get_data("tickets_by_day") or {})
+        newly_settled: List[Dict[str, Any]] = []
         for item in history:
             if item.get("status") == "settled" and item.get("profit") is not None:
                 continue
             topic_id = item.get("topic_id")
             if not topic_id:
                 continue
+            was_pending = item.get("profit") is None
             detail = self._fetch_topic_detail(str(topic_id), max_pages=3)
             if not detail:
                 continue
@@ -1103,9 +1193,8 @@ class HdskyDiceBet(_PluginBase):
                     day = item.get("date") or self._today_str()
                     tickets_by_day[day] = int(tickets_by_day.get(day, 0)) + 1
                     changed = True
-            # 标题已开奖但尚未扫到自己评分时，也写入开奖类型
+            # 标题已开奖但尚未扫到自己评分时，用理论盈亏兜底
             if detail.get("locked") and detail.get("result") and item.get("profit") is None:
-                # 自己未中或评分延迟：用理论盈亏兜底（仅当已确认有自己的下注）
                 if detail.get("self_bet") and detail["self_bet"].get("bet_type"):
                     bet_type = detail["self_bet"]["bet_type"]
                     amount = int(detail["self_bet"].get("amount") or item.get("amount") or 0)
@@ -1117,9 +1206,13 @@ class HdskyDiceBet(_PluginBase):
                     item["status"] = "settled"
                     item["result"] = result
                     changed = True
+            if was_pending and item.get("profit") is not None:
+                newly_settled.append(dict(item))
         if changed:
             self.save_data("history", history)
             self.save_data("tickets_by_day", tickets_by_day)
+        for item in newly_settled:
+            self._notify_settlement(item)
 
     def _refresh_today_tickets(self):
         """按自然天统计自己评论中的观影券次数。"""
