@@ -1,6 +1,7 @@
 import re
 import random
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta, date
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,9 +24,9 @@ class HdskyDiceBet(_PluginBase):
     """HDSky 空论坛（掷骰子）自动下注插件。"""
 
     plugin_name = "空论坛掷骰子下注"
-    plugin_desc = "自动参与 HDSky 掷骰子论坛下注，支持固定/随机/智能策略，并汇总魔力盈亏"
+    plugin_desc = "自动参与 HDSky 掷骰子论坛下注，支持同帖多注与分类型金额，并汇总魔力盈亏"
     plugin_icon = "hdskydicebet.png"
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.7"
     plugin_author = "Kuanghom"
     author_url = "https://github.com/Kuanghom"
     plugin_config_prefix = "hdskydicebet_"
@@ -67,8 +68,10 @@ class HdskyDiceBet(_PluginBase):
     _use_proxy = True
     _site_name = ""
     _bet_mode = "smart"  # fixed / random / smart
-    _fixed_type = "大"
+    _fixed_types: List[str] = ["大"]
     _bet_amount = 100
+    _amount_by_type: Dict[str, int] = {}
+    _reply_interval = 30
     _max_daily_bets: Optional[int] = None
     _max_daily_tickets: Optional[int] = None
     _smart_history_rounds = 50
@@ -85,8 +88,10 @@ class HdskyDiceBet(_PluginBase):
         self._cron = (config.get("cron") or "*/3 * * * *").strip()
         self._site_id = self._normalize_site_id(config.get("site_id"))
         self._bet_mode = config.get("bet_mode") or "smart"
-        self._fixed_type = config.get("fixed_type") or "大"
+        self._fixed_types = self._parse_fixed_types(config)
         self._bet_amount = self._clamp_amount(config.get("bet_amount", 100))
+        self._amount_by_type = self._parse_amount_by_type(config)
+        self._reply_interval = self._clamp_interval(config.get("reply_interval", 30))
         self._max_daily_bets = self._to_optional_int(config.get("max_daily_bets"))
         self._max_daily_tickets = self._to_optional_int(config.get("max_daily_tickets"))
         self._smart_history_rounds = max(10, int(config.get("smart_history_rounds") or 50))
@@ -268,7 +273,7 @@ class HdskyDiceBet(_PluginBase):
                                         "model": "bet_mode",
                                         "label": "下注模式",
                                         "items": [
-                                            {"title": "固定类型", "value": "fixed"},
+                                            {"title": "固定类型(可多选同帖多注)", "value": "fixed"},
                                             {"title": "随机类型", "value": "random"},
                                             {"title": "智能下注(古典概型)", "value": "smart"},
                                         ],
@@ -283,12 +288,14 @@ class HdskyDiceBet(_PluginBase):
                                 {
                                     "component": "VSelect",
                                     "props": {
-                                        "model": "fixed_type",
-                                        "label": "固定下注类型",
+                                        "model": "fixed_types",
+                                        "label": "下注类型",
+                                        "multiple": True,
+                                        "chips": True,
                                         "items": [
                                             {"title": t, "value": t} for t in self.BET_TYPES
                                         ],
-                                        "hint": "仅固定模式生效",
+                                        "hint": "固定模式：勾选多个则同帖依次下注；随机/智能：在勾选范围内选择（空=全部）",
                                         "persistent-hint": True,
                                     },
                                 }
@@ -302,10 +309,77 @@ class HdskyDiceBet(_PluginBase):
                                     "component": "VTextField",
                                     "props": {
                                         "model": "bet_amount",
-                                        "label": "下注金额",
+                                        "label": "默认下注金额",
                                         "type": "number",
-                                        "hint": "范围 100 ~ 100000",
+                                        "hint": "范围 100 ~ 100000；下方未单独填写的类型用此金额",
                                         "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "component": "VRow",
+                    "content": [
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 3},
+                            "content": [
+                                {
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "amount_大",
+                                        "label": "大 · 金额",
+                                        "type": "number",
+                                        "placeholder": "默认金额",
+                                        "hint": "留空则用默认下注金额",
+                                        "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 3},
+                            "content": [
+                                {
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "amount_小",
+                                        "label": "小 · 金额",
+                                        "type": "number",
+                                        "placeholder": "默认金额",
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 3},
+                            "content": [
+                                {
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "amount_顺子",
+                                        "label": "顺子 · 金额",
+                                        "type": "number",
+                                        "placeholder": "默认金额",
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 3},
+                            "content": [
+                                {
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "amount_豹子",
+                                        "label": "豹子 · 金额",
+                                        "type": "number",
+                                        "placeholder": "默认金额",
                                     },
                                 }
                             ],
@@ -338,15 +412,36 @@ class HdskyDiceBet(_PluginBase):
                                 {
                                     "component": "VTextField",
                                     "props": {
-                                        "model": "max_daily_bets",
-                                        "label": "每日最大下注次数",
-                                        "placeholder": "不填则不限制",
-                                        "hint": "按自然天统计已成功下注次数",
+                                        "model": "reply_interval",
+                                        "label": "同帖多注间隔(秒)",
+                                        "type": "number",
+                                        "hint": "同一帖连续回复间隔，默认 30，避免刷帖限制",
                                         "persistent-hint": True,
                                     },
                                 }
                             ],
                         },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 4},
+                            "content": [
+                                {
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "max_daily_bets",
+                                        "label": "每日最大下注次数",
+                                        "placeholder": "不填则不限制",
+                                        "hint": "按自然天统计已成功下注次数（多注各计 1 次）",
+                                        "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "component": "VRow",
+                    "content": [
                         {
                             "component": "VCol",
                             "props": {"cols": 12, "md": 4},
@@ -363,11 +458,6 @@ class HdskyDiceBet(_PluginBase):
                                 }
                             ],
                         },
-                    ],
-                },
-                {
-                    "component": "VRow",
-                    "content": [
                         {
                             "component": "VCol",
                             "props": {"cols": 12, "md": 4},
@@ -414,8 +504,13 @@ class HdskyDiceBet(_PluginBase):
             "onlyonce": False,
             "site_id": self._site_id,
             "bet_mode": "smart",
-            "fixed_type": "大",
+            "fixed_types": ["大"],
             "bet_amount": 100,
+            "amount_大": "",
+            "amount_小": "",
+            "amount_顺子": "",
+            "amount_豹子": "",
+            "reply_interval": 30,
             "cron": "*/3 * * * *",
             "max_daily_bets": "",
             "max_daily_tickets": "",
@@ -880,8 +975,12 @@ class HdskyDiceBet(_PluginBase):
         try:
             next_run = self._next_cron_time()
             logger.info(f"{self.LOG_TAG}====== 开始执行 ======")
-            logger.info(f"{self.LOG_TAG}配置: mode={self._bet_mode} amount={self._bet_amount} "
-                        f"site_id={self._site_id} cron={self._cron} 下次周期≈{next_run}")
+            logger.info(
+                f"{self.LOG_TAG}配置: mode={self._bet_mode} types={self._fixed_types} "
+                f"default_amount={self._bet_amount} amounts={self._amount_by_type} "
+                f"interval={self._reply_interval}s site_id={self._site_id} "
+                f"cron={self._cron} 下次周期≈{next_run}"
+            )
             message = self._run_internal()
             self.save_data(
                 "last_run",
@@ -963,9 +1062,10 @@ class HdskyDiceBet(_PluginBase):
                 self.get_data("history") or [], today
             ) >= self._max_daily_bets:
                 break
-            if self._already_bet_topic(topic["topic_id"]):
-                logger.debug(f"{self.LOG_TAG}主题#{topic['topic_id']} 本地已有记录，跳过")
-                continue
+            if self._max_daily_tickets is not None:
+                tickets_now = int((self.get_data("tickets_by_day") or {}).get(today, 0))
+                if tickets_now >= self._max_daily_tickets:
+                    break
             # 二次确认帖内是否已下注 / 是否已锁定
             detail = self._fetch_topic_detail(topic["topic_id"])
             if not detail:
@@ -973,40 +1073,79 @@ class HdskyDiceBet(_PluginBase):
             if detail.get("locked") or detail.get("result"):
                 logger.debug(f"{self.LOG_TAG}主题#{topic['topic_id']} 已锁定/已开奖，跳过")
                 continue
-            if detail.get("self_bet"):
-                self._remember_existing_bet(topic, detail["self_bet"])
-                logger.info(f"{self.LOG_TAG}主题#{topic['topic_id']} 帖内已有自己的下注，记入手动记录")
+
+            # 帖内已有自己的楼层：补记本地，并据此决定还缺哪些类型
+            forum_types = set()
+            self_bets = detail.get("self_bets") or []
+            if not self_bets and detail.get("self_bet"):
+                self_bets = [detail["self_bet"]]
+            for sb in self_bets:
+                bt = sb.get("bet_type")
+                if not bt:
+                    continue
+                forum_types.add(bt)
+                self._remember_existing_bet(topic, sb)
+
+            plans = self._resolve_bet_plans(topics)
+            local_types = self._bet_types_on_topic(topic["topic_id"])
+            done_types = local_types | forum_types
+            todo = [(t, a) for t, a in plans if t not in done_types]
+            if not todo:
+                logger.debug(
+                    f"{self.LOG_TAG}主题#{topic['topic_id']} 计划类型均已下注 "
+                    f"done={sorted(done_types)} plans={[p[0] for p in plans]}"
+                )
                 continue
-            bet_type = self._choose_bet_type(topics)
-            amount = self._clamp_amount(self._bet_amount)
+
             logger.info(
-                f"{self.LOG_TAG}准备下注 主题#{topic['topic_id']} => {bet_type} {amount} "
-                f"(开奖 {topic.get('draw_time')})"
+                f"{self.LOG_TAG}准备下注 主题#{topic['topic_id']} => "
+                f"{', '.join(f'{t} {a}' for t, a in todo)} "
+                f"(开奖 {topic.get('draw_time')}, 间隔 {self._reply_interval}s)"
             )
-            ok, msg = self._post_bet(topic["topic_id"], bet_type, amount)
-            if ok:
-                record = {
-                    "time": self._now_str(),
-                    "date": today,
-                    "topic_id": topic["topic_id"],
-                    "draw_time": topic.get("draw_time"),
-                    "url": f"{self.BASE_URL}/forums.php?action=viewtopic&forumid={self.FORUM_ID}&topicid={topic['topic_id']}",
-                    "bet_type": bet_type,
-                    "amount": amount,
-                    "mode": self._bet_mode,
-                    "result": None,
-                    "profit": None,
-                    "got_ticket": False,
-                    "status": "pending",
-                    "settle_notified": False,
-                }
-                self._append_history(record)
-                acted.append(f"{bet_type} {amount} @#{topic['topic_id']}")
-                self._notify_bet_success(record)
-            else:
-                acted.append(f"失败#{topic['topic_id']}:{msg}")
-                logger.warning(f"{self.LOG_TAG}下注失败 topic={topic['topic_id']}: {msg}")
-                self._notify_bet_failure(topic["topic_id"], msg)
+            for idx, (bet_type, amount) in enumerate(todo):
+                if self._max_daily_bets is not None and self._count_bets_on(
+                    self.get_data("history") or [], today
+                ) >= self._max_daily_bets:
+                    acted.append(f"达每日上限，停止后续多注@#{topic['topic_id']}")
+                    break
+                if idx > 0 and self._reply_interval > 0:
+                    logger.info(
+                        f"{self.LOG_TAG}同帖多注等待 {self._reply_interval}s "
+                        f"后继续 {bet_type} {amount}"
+                    )
+                    time.sleep(self._reply_interval)
+                ok, msg = self._post_bet(topic["topic_id"], bet_type, amount)
+                if ok:
+                    record = {
+                        "time": self._now_str(),
+                        "date": today,
+                        "topic_id": topic["topic_id"],
+                        "draw_time": topic.get("draw_time"),
+                        "url": (
+                            f"{self.BASE_URL}/forums.php?action=viewtopic"
+                            f"&forumid={self.FORUM_ID}&topicid={topic['topic_id']}"
+                        ),
+                        "bet_type": bet_type,
+                        "amount": amount,
+                        "mode": self._bet_mode,
+                        "result": None,
+                        "profit": None,
+                        "got_ticket": False,
+                        "status": "pending",
+                        "settle_notified": False,
+                    }
+                    self._append_history(record)
+                    acted.append(f"{bet_type} {amount} @#{topic['topic_id']}")
+                    self._notify_bet_success(record)
+                else:
+                    acted.append(f"失败#{topic['topic_id']}:{bet_type}:{msg}")
+                    logger.warning(
+                        f"{self.LOG_TAG}下注失败 topic={topic['topic_id']} "
+                        f"{bet_type} {amount}: {msg}"
+                    )
+                    self._notify_bet_failure(topic["topic_id"], f"{bet_type}: {msg}")
+                    # 失败则不再继续同帖后续类型，避免间隔后仍撞限制
+                    break
 
         if not acted:
             return "有开放帖，但均已下注或不可投"
@@ -1261,9 +1400,9 @@ class HdskyDiceBet(_PluginBase):
             if more:
                 html_all += more
 
-        self_bet = None
+        self_bets: List[Dict[str, Any]] = []
         got_ticket = False
-        profit = None
+        profit_total = None
         if self._username:
             for post in self._parse_posts(html_all):
                 if post["username"] != self._username:
@@ -1274,21 +1413,26 @@ class HdskyDiceBet(_PluginBase):
                     f"profit={post.get('settle_profit')} ticket={post.get('got_ticket')}"
                 )
                 if post.get("bet_type"):
-                    self_bet = {
-                        "bet_type": post["bet_type"],
-                        "amount": post["amount"],
-                        "profit": post.get("settle_profit"),
-                        "got_ticket": post.get("got_ticket", False),
-                    }
+                    self_bets.append(
+                        {
+                            "bet_type": post["bet_type"],
+                            "amount": post["amount"],
+                            "profit": post.get("settle_profit"),
+                            "got_ticket": post.get("got_ticket", False),
+                        }
+                    )
                 if post.get("got_ticket"):
                     got_ticket = True
                 if post.get("settle_profit") is not None:
-                    profit = (profit or 0) + post["settle_profit"]
-                    if self_bet:
-                        self_bet["profit"] = profit
-                        self_bet["got_ticket"] = got_ticket or self_bet.get("got_ticket")
+                    profit_total = (profit_total or 0) + post["settle_profit"]
         else:
             logger.debug(f"{self.LOG_TAG}主题#{topic_id} 未设置 username，跳过楼层匹配")
+
+        # 兼容旧字段：self_bet 取最后一条
+        self_bet = self_bets[-1] if self_bets else None
+        if self_bet and got_ticket:
+            self_bet = dict(self_bet)
+            self_bet["got_ticket"] = True
 
         return {
             "topic_id": topic_id,
@@ -1297,8 +1441,9 @@ class HdskyDiceBet(_PluginBase):
             "dice": dice,
             "locked": locked,
             "self_bet": self_bet,
+            "self_bets": self_bets,
             "got_ticket": got_ticket,
-            "profit": profit,
+            "profit": profit_total,
             "pages": pages,
         }
 
@@ -1377,10 +1522,14 @@ class HdskyDiceBet(_PluginBase):
             return False, "请求失败"
         if "该页面必须在登录后才能访问" in html:
             return False, "Cookie 失效"
-        # 成功后通常会跳回主题；再读一次确认
+        # 成功后通常会跳回主题；再读一次确认对应类型是否出现
         detail = self._fetch_topic_detail(topic_id, max_pages=2)
-        if detail and detail.get("self_bet"):
-            return True, "ok"
+        if detail:
+            for sb in detail.get("self_bets") or []:
+                if sb.get("bet_type") == bet_type:
+                    return True, "ok"
+            if detail.get("self_bet") and detail["self_bet"].get("bet_type") == bet_type:
+                return True, "ok"
         # 有些站点 post 后直接带上自己的回复
         if self._username and self._username in (html or "") and bet_type in (html or ""):
             return True, "ok"
@@ -1396,16 +1545,33 @@ class HdskyDiceBet(_PluginBase):
     # ------------------------------------------------------------------ #
     # 智能下注（古典概型 + 历史偏差）
     # ------------------------------------------------------------------ #
-    def _choose_bet_type(self, recent_topics: List[Dict[str, Any]]) -> str:
+    def _candidate_types(self) -> List[str]:
+        types = [t for t in self._fixed_types if t in self.BET_TYPES]
+        return types or list(self.BET_TYPES)
+
+    def _amount_for(self, bet_type: str) -> int:
+        return int(self._amount_by_type.get(bet_type) or self._bet_amount)
+
+    def _resolve_bet_plans(self, recent_topics: List[Dict[str, Any]]) -> List[Tuple[str, int]]:
+        """返回本轮要对帖子下注的 (类型, 金额) 列表。固定模式可多注。"""
         mode = (self._bet_mode or "smart").lower()
         if mode == "fixed":
-            t = self._fixed_type if self._fixed_type in self.BET_TYPES else "大"
-            return t
+            return [(t, self._amount_for(t)) for t in self._candidate_types()]
         if mode == "random":
-            return random.choice(list(self.BET_TYPES))
-        return self._smart_choose(recent_topics)
+            t = random.choice(self._candidate_types())
+            return [(t, self._amount_for(t))]
+        t = self._smart_choose(recent_topics, candidates=self._candidate_types())
+        return [(t, self._amount_for(t))]
 
-    def _smart_choose(self, recent_topics: List[Dict[str, Any]]) -> str:
+    def _choose_bet_type(self, recent_topics: List[Dict[str, Any]]) -> str:
+        plans = self._resolve_bet_plans(recent_topics)
+        return plans[0][0] if plans else "大"
+
+    def _smart_choose(
+        self,
+        recent_topics: List[Dict[str, Any]],
+        candidates: Optional[List[str]] = None,
+    ) -> str:
         """
         古典概型智能策略：
         1. 理论概率 P_theo（三骰子 216 种等可能结果，优先级 豹子>顺子>大小）
@@ -1414,6 +1580,9 @@ class HdskyDiceBet(_PluginBase):
         4. 结合理论期望 EV = P_theo * odds - (1 - P_theo) 做轻微加权
         5. 选综合得分最高者；大小并列时看最近连续未出侧
         """
+        pool = [t for t in (candidates or self.BET_TYPES) if t in self.BET_TYPES]
+        if not pool:
+            pool = list(self.BET_TYPES)
         # 按帖子去重收集最近已开奖结果
         result_pairs = []
         seen_topics = set()
@@ -1436,7 +1605,7 @@ class HdskyDiceBet(_PluginBase):
         n = len(results) or 1
         emp = Counter(results)
         scores = {}
-        for t in self.BET_TYPES:
+        for t in pool:
             p_theo = self.CLASSICAL_COUNT[t] / self.CLASSICAL_TOTAL
             p_emp = emp.get(t, 0) / n
             deficit = p_theo - p_emp
@@ -1446,7 +1615,7 @@ class HdskyDiceBet(_PluginBase):
             scores[t] = deficit * 1.0 + ev * 0.15
 
         # 最近连续未出现加权（冷号回补）
-        for t in self.BET_TYPES:
+        for t in pool:
             streak = 0
             for r in results:
                 if r == t:
@@ -1456,7 +1625,7 @@ class HdskyDiceBet(_PluginBase):
 
         best = max(scores, key=scores.get)
         # 若最佳是大/小且分差极小，选更冷的一侧
-        if best in ("大", "小"):
+        if best in ("大", "小") and "大" in scores and "小" in scores:
             other = "小" if best == "大" else "大"
             if abs(scores[best] - scores[other]) < 0.01:
                 best = min(("大", "小"), key=lambda x: emp.get(x, 0))
@@ -1469,28 +1638,50 @@ class HdskyDiceBet(_PluginBase):
     # ------------------------------------------------------------------ #
     # 记录 / 同步 / 汇总
     # ------------------------------------------------------------------ #
-    def _already_bet_topic(self, topic_id: str) -> bool:
+    def _bet_types_on_topic(self, topic_id: str) -> set:
         history = self.get_data("history") or []
-        return any(str(h.get("topic_id")) == str(topic_id) for h in history)
+        return {
+            h.get("bet_type")
+            for h in history
+            if str(h.get("topic_id")) == str(topic_id) and h.get("bet_type")
+        }
+
+    def _already_bet_topic_type(self, topic_id: str, bet_type: str) -> bool:
+        return bet_type in self._bet_types_on_topic(topic_id)
+
+    def _already_bet_topic(self, topic_id: str) -> bool:
+        """兼容：主题下是否已有任意本地下注记录。"""
+        return bool(self._bet_types_on_topic(topic_id))
 
     def _remember_existing_bet(self, topic: Dict[str, Any], self_bet: Dict[str, Any]):
-        if self._already_bet_topic(topic["topic_id"]):
+        bet_type = self_bet.get("bet_type")
+        if not bet_type:
+            return
+        if self._already_bet_topic_type(topic["topic_id"], bet_type):
             return
         record = {
             "time": self._now_str(),
             "date": self._today_str(),
             "topic_id": topic["topic_id"],
             "draw_time": topic.get("draw_time"),
-            "url": f"{self.BASE_URL}/forums.php?action=viewtopic&forumid={self.FORUM_ID}&topicid={topic['topic_id']}",
-            "bet_type": self_bet.get("bet_type"),
+            "url": (
+                f"{self.BASE_URL}/forums.php?action=viewtopic"
+                f"&forumid={self.FORUM_ID}&topicid={topic['topic_id']}"
+            ),
+            "bet_type": bet_type,
             "amount": self_bet.get("amount"),
             "mode": "manual",
             "result": topic.get("result"),
             "profit": self_bet.get("profit"),
             "got_ticket": bool(self_bet.get("got_ticket")),
             "status": "settled" if self_bet.get("profit") is not None else "pending",
+            "settle_notified": False,
         }
         self._append_history(record)
+        logger.info(
+            f"{self.LOG_TAG}主题#{topic['topic_id']} 补记已有下注 {bet_type} "
+            f"{self_bet.get('amount')}"
+        )
 
     def _append_history(self, record: Dict[str, Any]):
         history = self.get_data("history") or []
@@ -1569,22 +1760,46 @@ class HdskyDiceBet(_PluginBase):
             if result:
                 item["result"] = result
 
+            matched_floor = None
             if detail:
-                if detail.get("self_bet") and detail["self_bet"].get("profit") is not None:
-                    item["profit"] = detail["self_bet"]["profit"]
+                floors = detail.get("self_bets") or []
+                if not floors and detail.get("self_bet"):
+                    floors = [detail["self_bet"]]
+                matched_floor = self._match_self_bet_floor(item, floors)
+
+                if matched_floor and matched_floor.get("profit") is not None:
+                    item["profit"] = matched_floor["profit"]
                     item["status"] = "settled"
                     changed = True
                     logger.info(
-                        f"{self.LOG_TAG}主题#{topic_id} 兑奖评分结算盈亏={item['profit']}"
+                        f"{self.LOG_TAG}主题#{topic_id} 兑奖评分结算 "
+                        f"{item.get('bet_type')} 盈亏={item['profit']}"
                     )
-                elif detail.get("profit") is not None:
+                elif (
+                    not floors
+                    and detail.get("profit") is not None
+                    and item.get("profit") is None
+                    and len([h for h in history if str(h.get("topic_id")) == str(topic_id)]) <= 1
+                ):
+                    # 仅单注主题可安全使用汇总 profit
                     item["profit"] = detail["profit"]
                     item["status"] = "settled"
                     changed = True
-                if detail.get("got_ticket") or (
-                    detail.get("self_bet") and detail["self_bet"].get("got_ticket")
-                ):
-                    if not item.get("got_ticket"):
+
+                ticket_hit = bool(
+                    (matched_floor and matched_floor.get("got_ticket"))
+                    or detail.get("got_ticket")
+                    or (detail.get("self_bet") and detail["self_bet"].get("got_ticket"))
+                )
+                if ticket_hit and not item.get("got_ticket"):
+                    # 同帖多注只给一笔记观影券，避免重复累计
+                    sibling_has_ticket = any(
+                        str(h.get("topic_id")) == str(topic_id)
+                        and h is not item
+                        and h.get("got_ticket")
+                        for h in history
+                    )
+                    if not sibling_has_ticket:
                         item["got_ticket"] = True
                         day = item.get("date") or self._today_str()
                         tickets_by_day[day] = int(tickets_by_day.get(day, 0)) + 1
@@ -1598,13 +1813,12 @@ class HdskyDiceBet(_PluginBase):
                     or result
                 )
                 if locked:
-                    bet_type = None
-                    amount = None
-                    if detail and detail.get("self_bet"):
-                        bet_type = detail["self_bet"].get("bet_type")
-                        amount = detail["self_bet"].get("amount")
-                    bet_type = bet_type or item.get("bet_type")
-                    amount = amount if amount is not None else item.get("amount")
+                    bet_type = item.get("bet_type")
+                    amount = item.get("amount")
+                    if matched_floor:
+                        bet_type = matched_floor.get("bet_type") or bet_type
+                        if matched_floor.get("amount") is not None:
+                            amount = matched_floor.get("amount")
                     profit = self._calc_settle_profit(bet_type, amount, result)
                     if profit is not None:
                         item["profit"] = profit
@@ -1714,6 +1928,63 @@ class HdskyDiceBet(_PluginBase):
         except (TypeError, ValueError):
             amount = 100
         return max(100, min(100000, amount))
+
+    @classmethod
+    def _clamp_interval(cls, value: Any) -> int:
+        try:
+            n = int(float(value))
+        except (TypeError, ValueError):
+            n = 30
+        return max(0, min(600, n))
+
+    @classmethod
+    def _parse_fixed_types(cls, config: dict) -> List[str]:
+        raw = config.get("fixed_types")
+        if raw is None or raw == "" or raw == []:
+            legacy = config.get("fixed_type") or "大"
+            raw = [legacy] if isinstance(legacy, str) else list(legacy or [])
+        if isinstance(raw, str):
+            raw = [x.strip() for x in raw.split(",") if x.strip()]
+        types = [t for t in raw if t in cls.BET_TYPES]
+        # 保序去重
+        seen = set()
+        ordered = []
+        for t in types:
+            if t not in seen:
+                seen.add(t)
+                ordered.append(t)
+        return ordered or ["大"]
+
+    @classmethod
+    def _parse_amount_by_type(cls, config: dict) -> Dict[str, int]:
+        mapping: Dict[str, int] = {}
+        for t in cls.BET_TYPES:
+            raw = config.get(f"amount_{t}")
+            if raw is None or str(raw).strip() == "":
+                continue
+            mapping[t] = cls._clamp_amount(raw)
+        return mapping
+
+    @staticmethod
+    def _match_self_bet_floor(
+        item: Dict[str, Any], floors: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """按类型(+金额)匹配帖内自己的下注楼层。"""
+        if not floors:
+            return None
+        bet_type = item.get("bet_type")
+        amount = item.get("amount")
+        typed = [f for f in floors if f.get("bet_type") == bet_type]
+        if not typed:
+            return None
+        if amount is not None:
+            for f in typed:
+                try:
+                    if int(f.get("amount")) == int(amount):
+                        return f
+                except (TypeError, ValueError):
+                    continue
+        return typed[0]
 
     @staticmethod
     def _to_optional_int(value: Any) -> Optional[int]:
