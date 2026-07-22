@@ -1,4 +1,17 @@
 {
+  "HdskyDiceBet": {
+    "name": "空论坛掷骰子下注",
+    "description": "自动参与 HDSky 掷骰子论坛下注，支持固定/随机/智能策略，并按日周月汇总魔力盈亏",
+    "labels": "HDSky,论坛,下注",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/HDSky.ico",
+    "author": "Kuanghom",
+    "level": 2,
+    "system_version": ">=2.12.0",
+    "history": {
+      "v1.0.0": "首个版本：固定/随机/古典概型智能下注，每日次数与观影券上限，下注记录与日/周/月盈亏汇总"
+    }
+  },
   "TransmissionTrackerLabel": {
     "name": "Transmission Tracker 标签",
     "description": "根据种子 tracker 地址，按配置规则自动为 Transmission 添加标签（支持 / 分隔多标签）",

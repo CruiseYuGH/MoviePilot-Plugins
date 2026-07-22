@@ -8,3 +8,6 @@ __pycache__/
 upload_plugin.py
 install_local_plugin.py
 check_db.py
+*cookie.txt
+*.html
+_probe.py
