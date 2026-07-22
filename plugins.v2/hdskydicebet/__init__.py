@@ -22,7 +22,7 @@ class HdskyDiceBet(_PluginBase):
 
     plugin_name = "空论坛掷骰子下注"
     plugin_desc = "自动参与 HDSky 掷骰子论坛下注，支持固定/随机/智能策略，并汇总魔力盈亏"
-    plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/HDSky.ico"
+    plugin_icon = "https://raw.githubusercontent.com/Kuanghom/MoviePilot-Plugins/main/icons/hdskydicebet.png"
     plugin_version = "1.0.1"
     plugin_author = "Kuanghom"
     author_url = "https://github.com/Kuanghom"
