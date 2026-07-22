@@ -1,3 +1,4 @@
+import math
 import re
 import random
 import threading
@@ -24,9 +25,9 @@ class HdskyDiceBet(_PluginBase):
     """HDSky 空论坛（掷骰子）自动下注插件。"""
 
     plugin_name = "空论坛掷骰子下注"
-    plugin_desc = "自动参与 HDSky 掷骰子论坛下注，支持同帖多注与分类型金额，并汇总魔力盈亏"
+    plugin_desc = "自动参与 HDSky 掷骰子论坛下注；智能模式默认大小，可选按统计显著性加注顺子/豹子"
     plugin_icon = "hdskydicebet.png"
-    plugin_version = "1.0.7"
+    plugin_version = "1.0.8"
     plugin_author = "Kuanghom"
     author_url = "https://github.com/Kuanghom"
     plugin_config_prefix = "hdskydicebet_"
@@ -46,6 +47,12 @@ class HdskyDiceBet(_PluginBase):
     # 三枚骰子古典概型（豹子 > 顺子 > 大小）
     CLASSICAL_COUNT = {"豹子": 6, "顺子": 24, "大": 93, "小": 93}
     CLASSICAL_TOTAL = 216
+    # 智能主注仅大小（最大猜中率 / 最优 EV）；高赔为可选加注
+    SMART_BASE_TYPES = ("大", "小")
+    SMART_EXTRA_TYPES = ("顺子", "豹子")
+    # 单侧 z 检验阈值显著偏低的阈值（约 10%）；样本不足不加注
+    SMART_Z_THRESHOLD = -1.28
+    SMART_EXTRA_MIN_ROUNDS = 20
     TOPIC_TITLE_RE = re.compile(
         r"本轮开奖时间:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})"
         r"(?:\s*【\s*(豹子|顺子|大|小)\s+([\d,]+)\s*】)?"
@@ -75,6 +82,8 @@ class HdskyDiceBet(_PluginBase):
     _max_daily_bets: Optional[int] = None
     _max_daily_tickets: Optional[int] = None
     _smart_history_rounds = 50
+    _smart_allow_shunzi = False
+    _smart_allow_baozi = False
     _history_days = 90
     _username = ""
     _scheduler: Optional[BackgroundScheduler] = None
@@ -95,6 +104,8 @@ class HdskyDiceBet(_PluginBase):
         self._max_daily_bets = self._to_optional_int(config.get("max_daily_bets"))
         self._max_daily_tickets = self._to_optional_int(config.get("max_daily_tickets"))
         self._smart_history_rounds = max(10, int(config.get("smart_history_rounds") or 50))
+        self._smart_allow_shunzi = bool(config.get("smart_allow_shunzi"))
+        self._smart_allow_baozi = bool(config.get("smart_allow_baozi"))
         self._history_days = max(7, int(config.get("history_days") or 90))
         self._username = (self.get_data("username") or "").strip()
 
@@ -275,7 +286,7 @@ class HdskyDiceBet(_PluginBase):
                                         "items": [
                                             {"title": "固定类型(可多选同帖多注)", "value": "fixed"},
                                             {"title": "随机类型", "value": "random"},
-                                            {"title": "智能下注(古典概型)", "value": "smart"},
+                                            {"title": "智能下注(默认大小+可选高赔)", "value": "smart"},
                                         ],
                                     },
                                 }
@@ -295,7 +306,7 @@ class HdskyDiceBet(_PluginBase):
                                         "items": [
                                             {"title": t, "value": t} for t in self.BET_TYPES
                                         ],
-                                        "hint": "固定模式：勾选多个则同帖依次下注；随机/智能：在勾选范围内选择（空=全部）",
+                                        "hint": "固定/随机模式用；智能模式主注固定在「大/小」，不受此项限制",
                                         "persistent-hint": True,
                                     },
                                 }
@@ -313,6 +324,58 @@ class HdskyDiceBet(_PluginBase):
                                         "type": "number",
                                         "hint": "范围 100 ~ 100000；下方未单独填写的类型用此金额",
                                         "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "component": "VRow",
+                    "content": [
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 4},
+                            "content": [
+                                {
+                                    "component": "VSwitch",
+                                    "props": {
+                                        "model": "smart_allow_shunzi",
+                                        "label": "智能允许加注顺子",
+                                        "color": "primary",
+                                        "hint": "仅智能模式：历史显著偏冷时才额外下一注顺子",
+                                        "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 4},
+                            "content": [
+                                {
+                                    "component": "VSwitch",
+                                    "props": {
+                                        "model": "smart_allow_baozi",
+                                        "label": "智能允许加注豹子",
+                                        "color": "primary",
+                                        "hint": "仅智能模式：历史显著偏冷时才额外下一注豹子",
+                                        "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 4},
+                            "content": [
+                                {
+                                    "component": "VAlert",
+                                    "props": {
+                                        "type": "info",
+                                        "variant": "tonal",
+                                        "density": "compact",
+                                        "text": "智能主注必为「大」或「小」（猜中率约43%）。勾选高赔后也不会每帖必压，需通过频率 z 检验才加注。",
                                     },
                                 }
                             ],
@@ -468,7 +531,7 @@ class HdskyDiceBet(_PluginBase):
                                         "model": "smart_history_rounds",
                                         "label": "智能策略参考历史轮数",
                                         "type": "number",
-                                        "hint": "默认 50，用于古典概型偏差修正",
+                                        "hint": "默认 50；智能加注顺子/豹子时用于频率 z 检验",
                                         "persistent-hint": True,
                                     },
                                 }
@@ -510,6 +573,8 @@ class HdskyDiceBet(_PluginBase):
             "amount_小": "",
             "amount_顺子": "",
             "amount_豹子": "",
+            "smart_allow_shunzi": False,
+            "smart_allow_baozi": False,
             "reply_interval": 30,
             "cron": "*/3 * * * *",
             "max_daily_bets": "",
@@ -978,8 +1043,9 @@ class HdskyDiceBet(_PluginBase):
             logger.info(
                 f"{self.LOG_TAG}配置: mode={self._bet_mode} types={self._fixed_types} "
                 f"default_amount={self._bet_amount} amounts={self._amount_by_type} "
-                f"interval={self._reply_interval}s site_id={self._site_id} "
-                f"cron={self._cron} 下次周期≈{next_run}"
+                f"interval={self._reply_interval}s "
+                f"smart_extra=顺子:{self._smart_allow_shunzi}/豹子:{self._smart_allow_baozi} "
+                f"site_id={self._site_id} cron={self._cron} 下次周期≈{next_run}"
             )
             message = self._run_internal()
             self.save_data(
@@ -1543,7 +1609,7 @@ class HdskyDiceBet(_PluginBase):
         return True, "ok"
 
     # ------------------------------------------------------------------ #
-    # 智能下注（古典概型 + 历史偏差）
+    # 智能下注（主注大小 + 可选高赔显著性加注）
     # ------------------------------------------------------------------ #
     def _candidate_types(self) -> List[str]:
         types = [t for t in self._fixed_types if t in self.BET_TYPES]
@@ -1553,38 +1619,22 @@ class HdskyDiceBet(_PluginBase):
         return int(self._amount_by_type.get(bet_type) or self._bet_amount)
 
     def _resolve_bet_plans(self, recent_topics: List[Dict[str, Any]]) -> List[Tuple[str, int]]:
-        """返回本轮要对帖子下注的 (类型, 金额) 列表。固定模式可多注。"""
+        """返回本轮要对帖子下注的 (类型, 金额) 列表。固定模式可多注；智能可主注+加注。"""
         mode = (self._bet_mode or "smart").lower()
         if mode == "fixed":
             return [(t, self._amount_for(t)) for t in self._candidate_types()]
         if mode == "random":
             t = random.choice(self._candidate_types())
             return [(t, self._amount_for(t))]
-        t = self._smart_choose(recent_topics, candidates=self._candidate_types())
-        return [(t, self._amount_for(t))]
+        return self._smart_resolve_plans(recent_topics)
 
     def _choose_bet_type(self, recent_topics: List[Dict[str, Any]]) -> str:
         plans = self._resolve_bet_plans(recent_topics)
         return plans[0][0] if plans else "大"
 
-    def _smart_choose(
-        self,
-        recent_topics: List[Dict[str, Any]],
-        candidates: Optional[List[str]] = None,
-    ) -> str:
-        """
-        古典概型智能策略：
-        1. 理论概率 P_theo（三骰子 216 种等可能结果，优先级 豹子>顺子>大小）
-        2. 取最近 N 轮已开奖结果得经验频率 P_emp
-        3. 对每类计算「短缺分」deficit = P_theo - P_emp（越大说明越该回补）
-        4. 结合理论期望 EV = P_theo * odds - (1 - P_theo) 做轻微加权
-        5. 选综合得分最高者；大小并列时看最近连续未出侧
-        """
-        pool = [t for t in (candidates or self.BET_TYPES) if t in self.BET_TYPES]
-        if not pool:
-            pool = list(self.BET_TYPES)
-        # 按帖子去重收集最近已开奖结果
-        result_pairs = []
+    def _collect_result_history(self, recent_topics: List[Dict[str, Any]]) -> List[str]:
+        """收集最近 N 轮已开奖结果（论坛列表顺序≈新→旧）。"""
+        result_pairs: List[str] = []
         seen_topics = set()
         for t in recent_topics:
             tid, res = t.get("topic_id"), t.get("result")
@@ -1601,39 +1651,107 @@ class HdskyDiceBet(_PluginBase):
                 result_pairs.append(res)
                 if len(result_pairs) >= self._smart_history_rounds:
                     break
-        results = result_pairs[: self._smart_history_rounds]
+        return result_pairs[: self._smart_history_rounds]
+
+    @staticmethod
+    def _cold_streak(results: List[str], bet_type: str) -> int:
+        streak = 0
+        for r in results:
+            if r == bet_type:
+                break
+            streak += 1
+        return streak
+
+    def _p_theo(self, bet_type: str) -> float:
+        return self.CLASSICAL_COUNT[bet_type] / self.CLASSICAL_TOTAL
+
+    def _proportion_z(self, count: int, n: int, p0: float) -> float:
+        """相对理论概率 p0 的频率 z 分数（偏低为负）。"""
+        if n <= 0 or p0 <= 0 or p0 >= 1:
+            return 0.0
+        se = math.sqrt(p0 * (1.0 - p0) / n)
+        if se <= 0:
+            return 0.0
+        return (count / n - p0) / se
+
+    def _smart_choose_base(self, results: List[str]) -> str:
+        """
+        主注只在「大/小」中选择（两者理论 P、EV 相同）。
+        用样本内相对短缺做并列打破；接近时看连续未出侧。
+        不声称提高真实胜率，只避免无意义地碰高赔主注。
+        """
         n = len(results) or 1
         emp = Counter(results)
         scores = {}
-        for t in pool:
-            p_theo = self.CLASSICAL_COUNT[t] / self.CLASSICAL_TOTAL
-            p_emp = emp.get(t, 0) / n
-            deficit = p_theo - p_emp
-            odds = self.ODDS[t]
-            ev = p_theo * odds - (1 - p_theo)
-            # 短缺为主，期望为辅（大小 EV 略优，避免长期偏豹子）
-            scores[t] = deficit * 1.0 + ev * 0.15
-
-        # 最近连续未出现加权（冷号回补）
-        for t in pool:
-            streak = 0
-            for r in results:
-                if r == t:
-                    break
-                streak += 1
-            scores[t] += streak * (self.CLASSICAL_COUNT[t] / self.CLASSICAL_TOTAL) * 0.02
-
+        for t in self.SMART_BASE_TYPES:
+            p0 = self._p_theo(t)
+            deficit = p0 - emp.get(t, 0) / n
+            streak = self._cold_streak(results, t)
+            # 短缺为主；极弱 streak 仅打破并列
+            scores[t] = deficit + streak * p0 * 0.01
         best = max(scores, key=scores.get)
-        # 若最佳是大/小且分差极小，选更冷的一侧
-        if best in ("大", "小") and "大" in scores and "小" in scores:
-            other = "小" if best == "大" else "大"
-            if abs(scores[best] - scores[other]) < 0.01:
-                best = min(("大", "小"), key=lambda x: emp.get(x, 0))
+        other = "小" if best == "大" else "大"
+        if abs(scores[best] - scores[other]) < 0.005:
+            best = min(self.SMART_BASE_TYPES, key=lambda x: emp.get(x, 0))
         logger.info(
-            f"{self.LOG_TAG}智能选择={best} scores={{{', '.join(f'{k}:{v:.4f}' for k,v in scores.items())}}} "
-            f"样本={len(results)} emp={dict(emp)}"
+            f"{self.LOG_TAG}智能主注={best} "
+            f"scores={{大:{scores['大']:.4f}, 小:{scores['小']:.4f}}} "
+            f"样本={len(results)} emp_大小={{大:{emp.get('大', 0)}, 小:{emp.get('小', 0)}}}"
         )
         return best
+
+    def _should_add_extra(self, bet_type: str, results: List[str]) -> Tuple[bool, str]:
+        """
+        是否加注高赔类型：要求
+        1) 样本量足够（至少 SMART_EXTRA_MIN_ROUNDS，且建议 >= 1/p0）
+        2) 经验频率相对理论概率显著偏低（单侧 z <= SMART_Z_THRESHOLD）
+        3) 最近连续未出达到约 0.5/p0 局（过滤刚出过又因噪声偏低的情况）
+        说明：独立骰子下这不能制造正期望，只是「用户允许高赔时的保守触发器」。
+        """
+        p0 = self._p_theo(bet_type)
+        n = len(results)
+        min_n = max(self.SMART_EXTRA_MIN_ROUNDS, int(math.ceil(1.0 / p0)))
+        if n < min_n:
+            return False, f"样本不足 n={n}<{min_n}"
+        k = sum(1 for r in results if r == bet_type)
+        z = self._proportion_z(k, n, p0)
+        streak = self._cold_streak(results, bet_type)
+        min_streak = max(3, int(math.ceil(0.5 / p0)))
+        if z > self.SMART_Z_THRESHOLD:
+            return False, f"不够冷 z={z:.2f}>{self.SMART_Z_THRESHOLD} (k={k}/{n})"
+        if streak < min_streak:
+            return False, f"冷连不足 streak={streak}<{min_streak} (z={z:.2f})"
+        return True, f"通过 z={z:.2f} streak={streak} k={k}/{n} p0={p0:.4f}"
+
+    def _smart_resolve_plans(self, recent_topics: List[Dict[str, Any]]) -> List[Tuple[str, int]]:
+        """
+        智能计划：
+        - 必有一注主注：大 或 小
+        - 若用户勾选，再按历史显著性决定是否追加顺子/豹子（可 0~2 注）
+        """
+        results = self._collect_result_history(recent_topics)
+        base = self._smart_choose_base(results)
+        plans: List[Tuple[str, int]] = [(base, self._amount_for(base))]
+
+        extras_enabled = []
+        if self._smart_allow_shunzi:
+            extras_enabled.append("顺子")
+        if self._smart_allow_baozi:
+            extras_enabled.append("豹子")
+
+        for extra in extras_enabled:
+            ok, reason = self._should_add_extra(extra, results)
+            if ok:
+                plans.append((extra, self._amount_for(extra)))
+                logger.info(f"{self.LOG_TAG}智能加注 {extra}: {reason}")
+            else:
+                logger.info(f"{self.LOG_TAG}智能不加注 {extra}: {reason}")
+
+        logger.info(
+            f"{self.LOG_TAG}智能计划={', '.join(f'{t} {a}' for t, a in plans)} "
+            f"样本={len(results)} emp={dict(Counter(results))}"
+        )
+        return plans
 
     # ------------------------------------------------------------------ #
     # 记录 / 同步 / 汇总

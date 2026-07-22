@@ -1,14 +1,15 @@
 {
   "HdskyDiceBet": {
     "name": "空论坛掷骰子下注",
-    "description": "自动参与 HDSky 掷骰子论坛下注，支持同帖多注与分类型金额，并按日周月汇总魔力盈亏",
+    "description": "自动参与 HDSky 掷骰子论坛下注；智能默认大小，可选按统计显著性加注顺子/豹子",
     "labels": "HDSky,论坛,下注",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "icon": "hdskydicebet.png",
     "author": "Kuanghom",
     "level": 2,
     "system_version": ">=2.12.0",
     "history": {
+      "v1.0.8": "重做智能算法：主注仅大/小；可勾选顺子/豹子，仅在历史频率显著偏低时加注",
       "v1.0.7": "支持同帖多注：多选类型、分类型魔力金额、可配置回复间隔（默认30秒）；结算按类型匹配",
       "v1.0.6": "图标改为 jsDelivr CDN，解决 raw.githubusercontent.com 无法访问",
       "v1.0.4": "修复详情页异常：tickets_by_day 取值运算符优先级错误导致显示「没有详情页面」",
