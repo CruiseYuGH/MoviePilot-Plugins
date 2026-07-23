@@ -21,7 +21,7 @@ from app.schemas import NotificationType
 from app.utils.http import RequestUtils
 
 
-class HdskyDiceBet(_PluginBase):
+class HdskyBet(_PluginBase):
     """HDSky 空论坛（掷骰子）自动下注插件。"""
 
     plugin_name = "空论坛"
@@ -30,11 +30,11 @@ class HdskyDiceBet(_PluginBase):
     plugin_version = "2.0.12"
     plugin_author = "CruiseYu"
     author_url = "https://github.com/CruiseYuGH"
-    plugin_config_prefix = "hdskydicebet_"
+    plugin_config_prefix = "hdskybet_"
     plugin_order = 25
     auth_level = 2
 
-    LOG_TAG = "[HdskyDiceBet] "
+    LOG_TAG = "[HdskyBet] "
     BASE_URL = "https://hdsky.me"
     FORUM_ID = 71
     DEFAULT_UA = (
@@ -166,7 +166,7 @@ class HdskyDiceBet(_PluginBase):
             return []
         return [
             {
-                "id": "HdskyDiceBet.Run",
+                "id": "HdskyBet.Run",
                 "name": "空论坛掷骰子下注",
                 "trigger": CronTrigger.from_crontab(self._cron),
                 "func": self.run_once,
