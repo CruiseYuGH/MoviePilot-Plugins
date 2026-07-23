@@ -25,9 +25,9 @@ class HdskyDiceBet(_PluginBase):
     """HDSky 空论坛（掷骰子）自动下注插件。"""
 
     plugin_name = "空论坛掷骰子下注"
-    plugin_desc = "自动参与 HDSky 掷骰子论坛下注；智能模式默认大小，可选按统计显著性加注顺子/豹子"
+    plugin_desc = "自动参与 HDSky 掷骰子论坛下注；支持智能下注与可配置连续反打追手"
     plugin_icon = "hdskydicebet.png"
-    plugin_version = "1.0.11"
+    plugin_version = "1.0.12"
     plugin_author = "Kuanghom"
     author_url = "https://github.com/Kuanghom"
     plugin_config_prefix = "hdskydicebet_"
@@ -86,6 +86,8 @@ class HdskyDiceBet(_PluginBase):
     _smart_history_rounds = 50
     _smart_allow_shunzi = False
     _smart_allow_baozi = False
+    _reverse_trigger_streak = 5
+    _reverse_max_chase = 8
     _history_days = 90
     _username = ""
     _scheduler: Optional[BackgroundScheduler] = None
@@ -108,6 +110,12 @@ class HdskyDiceBet(_PluginBase):
         self._smart_history_rounds = max(10, int(config.get("smart_history_rounds") or 50))
         self._smart_allow_shunzi = bool(config.get("smart_allow_shunzi"))
         self._smart_allow_baozi = bool(config.get("smart_allow_baozi"))
+        self._reverse_trigger_streak = self._clamp_int(
+            config.get("reverse_trigger_streak", 5), 5, 2, 20
+        )
+        self._reverse_max_chase = self._clamp_int(
+            config.get("reverse_max_chase", 8), 8, 1, 30
+        )
         self._history_days = max(7, int(config.get("history_days") or 90))
         self._username = (self.get_data("username") or "").strip()
 
@@ -289,6 +297,7 @@ class HdskyDiceBet(_PluginBase):
                                             {"title": "固定类型(可多选同帖多注)", "value": "fixed"},
                                             {"title": "随机类型", "value": "random"},
                                             {"title": "智能下注(默认大小+可选高赔)", "value": "smart"},
+                                            {"title": "反打模式(连续同侧后追反侧)", "value": "reverse"},
                                         ],
                                     },
                                 }
@@ -326,6 +335,58 @@ class HdskyDiceBet(_PluginBase):
                                         "type": "number",
                                         "hint": "范围 100 ~ 100000；下方未单独填写的类型用此金额",
                                         "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "component": "VRow",
+                    "content": [
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 4},
+                            "content": [
+                                {
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "reverse_trigger_streak",
+                                        "label": "反打触发连续次数",
+                                        "type": "number",
+                                        "hint": "仅反打模式：同侧连续出现达到该次数后下注反侧，默认 5",
+                                        "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 4},
+                            "content": [
+                                {
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "reverse_max_chase",
+                                        "label": "反打最多追手",
+                                        "type": "number",
+                                        "hint": "仅反打模式：反打未中继续追同一侧，达到上限后停止，默认 8",
+                                        "persistent-hint": True,
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 4},
+                            "content": [
+                                {
+                                    "component": "VAlert",
+                                    "props": {
+                                        "type": "warning",
+                                        "variant": "tonal",
+                                        "density": "compact",
+                                        "text": "反打模式只下注大/小；命中或追满后等待下一次连续同侧触发。",
                                     },
                                 }
                             ],
@@ -577,6 +638,8 @@ class HdskyDiceBet(_PluginBase):
             "amount_豹子": "",
             "smart_allow_shunzi": False,
             "smart_allow_baozi": False,
+            "reverse_trigger_streak": 5,
+            "reverse_max_chase": 8,
             "reply_interval": 30,
             "cron": "*/3 * * * *",
             "max_daily_bets": "",
@@ -1088,6 +1151,7 @@ class HdskyDiceBet(_PluginBase):
                 f"default_amount={self._bet_amount} amounts={self._amount_by_type} "
                 f"interval={self._reply_interval}s "
                 f"smart_extra=顺子:{self._smart_allow_shunzi}/豹子:{self._smart_allow_baozi} "
+                f"reverse=连续{self._reverse_trigger_streak}/追{self._reverse_max_chase} "
                 f"site_id={self._site_id} cron={self._cron} 下次周期≈{next_run}"
             )
             message = self._run_internal()
@@ -1691,6 +1755,8 @@ class HdskyDiceBet(_PluginBase):
         if mode == "random":
             t = random.choice(self._candidate_types())
             return [(t, self._amount_for(t))]
+        if mode == "reverse":
+            return self._reverse_resolve_plans(recent_topics)
         return self._smart_resolve_plans(recent_topics)
 
     def _choose_bet_type(self, recent_topics: List[Dict[str, Any]]) -> str:
@@ -1892,6 +1958,118 @@ class HdskyDiceBet(_PluginBase):
             f"样本={len(results)} emp={dict(Counter(results))}"
         )
         return plans
+
+    def _reverse_resolve_plans(self, recent_topics: List[Dict[str, Any]]) -> List[Tuple[str, int]]:
+        """
+        反打计划：
+        - 最近大/小同侧连续达到配置阈值，下注反侧
+        - 反打未中则继续追同一侧
+        - 连续未中达到最多追手后停止，直到大小走势先打断这组追手
+        """
+        results = self._collect_result_history(recent_topics)
+        size_results = [r for r in results if r in self.SMART_BASE_TYPES]
+        if not size_results:
+            logger.info(f"{self.LOG_TAG}反打模式：无大小样本，不下注")
+            return []
+
+        pending_side = self._reverse_pending_side()
+        if pending_side:
+            logger.info(f"{self.LOG_TAG}反打模式：上一手 {pending_side} 未结算，等待开奖")
+            return []
+
+        chase_side, chase_losses = self._reverse_active_chase()
+        if chase_side and chase_losses >= self._reverse_max_chase:
+            if size_results[0] != chase_side:
+                logger.info(
+                    f"{self.LOG_TAG}反打模式：{chase_side} 已追 {chase_losses}/"
+                    f"{self._reverse_max_chase} 手未中，等待走势打断"
+                )
+                return []
+            logger.info(
+                f"{self.LOG_TAG}反打模式：走势已开出追手侧 {chase_side}，结束旧追手"
+            )
+            chase_side, chase_losses = None, 0
+
+        if chase_side:
+            hand = chase_losses + 1
+            logger.info(
+                f"{self.LOG_TAG}反打模式：继续追 {chase_side} 第 {hand}/"
+                f"{self._reverse_max_chase} 手"
+            )
+            return [(chase_side, self._amount_for(chase_side))]
+
+        run_side = size_results[0]
+        run_len = 0
+        for result in size_results:
+            if result != run_side:
+                break
+            run_len += 1
+        if run_len < self._reverse_trigger_streak:
+            logger.info(
+                f"{self.LOG_TAG}反打模式：连开{run_side}×{run_len}/"
+                f"{self._reverse_trigger_streak}，暂不下注"
+            )
+            return []
+
+        bet_side = "小" if run_side == "大" else "大"
+        logger.info(
+            f"{self.LOG_TAG}反打模式：连开{run_side}×{run_len}，反打 {bet_side} "
+            f"第 1/{self._reverse_max_chase} 手"
+        )
+        return [(bet_side, self._amount_for(bet_side))]
+
+    def _reverse_pending_side(self) -> Optional[str]:
+        latest = self._latest_reverse_row()
+        if not latest:
+            return None
+        if latest.get("result") is None and latest.get("profit") is None:
+            return latest.get("bet_type")
+        return None
+
+    def _reverse_active_chase(self) -> Tuple[Optional[str], int]:
+        reverse_rows = self._reverse_history_rows()
+        if not reverse_rows:
+            return None, 0
+
+        latest = reverse_rows[0]
+        latest_side = latest.get("bet_type")
+        if not self._reverse_row_lost(latest):
+            return None, 0
+
+        losses = 0
+        for row in reverse_rows:
+            if row.get("bet_type") != latest_side or not self._reverse_row_lost(row):
+                break
+            losses += 1
+        return latest_side, losses
+
+    def _latest_reverse_row(self) -> Optional[Dict[str, Any]]:
+        rows = self._reverse_history_rows()
+        return rows[0] if rows else None
+
+    def _reverse_history_rows(self) -> List[Dict[str, Any]]:
+        history = self.get_data("history") or []
+        reverse_rows = [
+            h
+            for h in history
+            if (h.get("mode") or "").lower() == "reverse"
+            and h.get("bet_type") in self.SMART_BASE_TYPES
+        ]
+        reverse_rows.sort(key=lambda h: str(h.get("time") or ""), reverse=True)
+        return reverse_rows
+
+    @staticmethod
+    def _reverse_row_lost(row: Dict[str, Any]) -> bool:
+        result = row.get("result")
+        if result in HdskyDiceBet.SMART_BASE_TYPES:
+            return result != row.get("bet_type")
+        profit = row.get("profit")
+        if profit is None:
+            return False
+        try:
+            return float(profit) < 0
+        except (TypeError, ValueError):
+            return False
 
     # ------------------------------------------------------------------ #
     # 记录 / 同步 / 汇总
@@ -2194,6 +2372,14 @@ class HdskyDiceBet(_PluginBase):
         except (TypeError, ValueError):
             n = 30
         return max(0, min(600, n))
+
+    @staticmethod
+    def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+        try:
+            n = int(float(value))
+        except (TypeError, ValueError):
+            n = default
+        return max(minimum, min(maximum, n))
 
     @classmethod
     def _parse_fixed_types(cls, config: dict) -> List[str]:
