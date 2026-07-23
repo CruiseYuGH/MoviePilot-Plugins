@@ -24,7 +24,7 @@ from app.utils.http import RequestUtils
 class HdskyDiceBet(_PluginBase):
     """HDSky 空论坛（掷骰子）自动下注插件。"""
 
-    plugin_name = "空论坛掷骰子下注"
+    plugin_name = "空论坛"
     plugin_desc = "自动参与 HDSky 掷骰子论坛下注；支持智能下注与可配置连续反打追手"
     plugin_icon = "hdskydicebet.png"
     plugin_version = "2.0.12"
