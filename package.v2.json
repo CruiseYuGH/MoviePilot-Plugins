@@ -1,6 +1,6 @@
 {
   "HdskyDiceBet": {
-    "name": "空论坛掷骰子下注",
+    "name": "空论坛",
     "description": "自动参与 HDSky 掷骰子论坛下注；支持智能下注与可配置连续反打追手",
     "labels": "HDSky,论坛,下注",
     "version": "2.0.12",
