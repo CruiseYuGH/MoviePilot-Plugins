@@ -27,9 +27,9 @@ class HdskyDiceBet(_PluginBase):
     plugin_name = "空论坛掷骰子下注"
     plugin_desc = "自动参与 HDSky 掷骰子论坛下注；支持智能下注与可配置连续反打追手"
     plugin_icon = "hdskydicebet.png"
-    plugin_version = "1.0.12"
-    plugin_author = "Kuanghom"
-    author_url = "https://github.com/Kuanghom"
+    plugin_version = "2.0.12"
+    plugin_author = "CruiseYu"
+    author_url = "https://github.com/CruiseYuGH"
     plugin_config_prefix = "hdskydicebet_"
     plugin_order = 25
     auth_level = 2
