@@ -1,15 +1,15 @@
 {
-  "HdskyDiceBet": {
+  "HdskyBet": {
     "name": "空论坛",
     "description": "自动参与 HDSky 掷骰子论坛下注；支持智能下注与可配置连续反打追手",
     "labels": "HDSky,论坛,下注",
-    "version": "2.0.12",
+    "version": "1.0.0",
     "icon": "hdskydicebet.png",
     "author": "Kuanghom","Cruiseyu"
     "level": 2,
     "system_version": ">=2.12.0",
     "history": {
-      "v2.0.12": "新增反打模式：可配置连续同侧触发次数与最多追手，未中继续追同一侧，追满停止"
+      "v1.0.0": "新增反打模式：可配置连续同侧触发次数与最多追手，未中继续追同一侧，追满停止"
     }
   }
 }
